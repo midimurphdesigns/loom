@@ -39,3 +39,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# loom runtime data
+.loom/
+
+# Allow .env.example to be committed
+!.env.example
