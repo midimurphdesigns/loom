@@ -85,6 +85,21 @@ type StripeEventListing = {
   events: Array<{ id: string; type: string; created: number }>;
 };
 
+type ConsumerResult =
+  | { found: false; eventType: string; reason: string }
+  | {
+      found: true;
+      eventType: string;
+      eventId: string;
+      paymentIntentId: string | null;
+      amountUsd: number | null;
+      currency: string | null;
+      arrivedAt: string;
+      consumedAt: string;
+      action: string;
+      explainer: string;
+    };
+
 const CONCEPTS = [
   "Vercel Workflows",
   "durable execution",
@@ -144,6 +159,10 @@ export default function Home() {
     null,
   );
   const [webhookLoading, setWebhookLoading] = useState(false);
+  const [consumerResult, setConsumerResult] = useState<ConsumerResult | null>(
+    null,
+  );
+  const [consumerLoading, setConsumerLoading] = useState(false);
 
   const refreshCost = async () => {
     try {
@@ -238,6 +257,26 @@ export default function Home() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setWebhookLoading(false);
+    }
+  };
+
+  const fireConsumerWorkflow = async () => {
+    setError(null);
+    setConsumerResult(null);
+    setConsumerLoading(true);
+    try {
+      const res = await fetch("/api/workflows/webhook-consumer", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ eventType: "payment_intent.succeeded" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.reason ?? `${res.status}`);
+      setConsumerResult(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setConsumerLoading(false);
     }
   };
 
@@ -492,27 +531,58 @@ export default function Home() {
               stripe webhook · drift reconciliation
             </h2>
             <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]">
-              signed payload · upstash persistence · per-type list
+              two-click demo: receive then consume later
             </p>
           </header>
           <p className="text-[13px] leading-relaxed text-[var(--color-ink-muted)]">
-            Sends a Stripe-shaped <code>payment_intent.succeeded</code> event to
-            our own webhook receiver, signed server-side with
-            STRIPE_WEBHOOK_SECRET. The receiver verifies the signature,
-            persists the event to Upstash with a 30-day TTL, and pushes the id
-            onto a per-type list. The right column shows the most recent
-            persisted events.
+            Stripe webhooks aren&rsquo;t ordered, exactly-once, or timed
+            predictably relative to your workflows. My receiver doesn&rsquo;t
+            try to coordinate timing: it verifies the signature, persists every
+            event to Upstash, and acknowledges 200. Workflows that need an event
+            poll the store at their own pace. Decoupling receive-time from
+            process-time is what makes drift tolerable.
           </p>
-          <button
-            type="button"
-            onClick={sendTestWebhook}
-            disabled={webhookLoading}
-            className="self-start rounded border border-[var(--color-accent)] bg-[var(--color-accent)] px-5 py-2.5 text-sm font-medium text-[var(--color-canvas)] transition-opacity hover:opacity-90 disabled:opacity-40"
-          >
-            {webhookLoading ? "sending..." : "send test webhook"}
-          </button>
-          {webhookSendResult && <WebhookSendPanel result={webhookSendResult} />}
-          {webhookEvents && <WebhookEventsPanel listing={webhookEvents} />}
+          <div className="rounded border border-[var(--color-divider)] bg-[var(--color-canvas)] p-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]">
+              click 1 of 2 · simulates a stripe webhook arriving
+            </p>
+            <button
+              type="button"
+              onClick={sendTestWebhook}
+              disabled={webhookLoading}
+              className="mt-2 self-start rounded border border-[var(--color-accent)] bg-[var(--color-accent)] px-5 py-2.5 text-sm font-medium text-[var(--color-canvas)] transition-opacity hover:opacity-90 disabled:opacity-40"
+            >
+              {webhookLoading ? "sending..." : "send test webhook"}
+            </button>
+            <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-ink-faint)]">
+              Signs a Stripe-shaped <code>payment_intent.succeeded</code> event
+              server-side with STRIPE_WEBHOOK_SECRET, POSTs it to our own{" "}
+              <code>/api/webhooks/stripe</code> receiver. Watch the receiverStatus
+              go 200 and the event appear in the persisted list.
+            </p>
+            {webhookSendResult && <WebhookSendPanel result={webhookSendResult} />}
+            {webhookEvents && <WebhookEventsPanel listing={webhookEvents} />}
+          </div>
+          <div className="rounded border border-[var(--color-divider)] bg-[var(--color-canvas)] p-3">
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]">
+              click 2 of 2 · simulates a workflow consuming the event later
+            </p>
+            <button
+              type="button"
+              onClick={fireConsumerWorkflow}
+              disabled={consumerLoading}
+              className="mt-2 self-start rounded border border-[var(--color-accent)] bg-transparent px-5 py-2.5 text-sm font-medium text-[var(--color-accent)] transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-canvas)] disabled:opacity-40"
+            >
+              {consumerLoading ? "consuming..." : "fire consumer workflow"}
+            </button>
+            <p className="mt-2 text-[12px] leading-relaxed text-[var(--color-ink-faint)]">
+              Reads the persisted event store, picks the most recent event of
+              the type it cares about, acts on it. The workflow has no idea the
+              receiver fired at any earlier time. In production this would be a
+              Vercel Workflow polling inside a durable step.
+            </p>
+            {consumerResult && <ConsumerResultPanel result={consumerResult} />}
+          </div>
         </article>
       </section>
 
@@ -716,6 +786,57 @@ function WebhookEventsPanel({ listing }: { listing: StripeEventListing }) {
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+function ConsumerResultPanel({ result }: { result: ConsumerResult }) {
+  const META =
+    "font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]";
+  if (!result.found) {
+    return (
+      <div className="mt-2 text-[12px] text-orange-300">
+        not found: {result.reason}
+      </div>
+    );
+  }
+  return (
+    <div className="mt-2 flex flex-col gap-2 text-[13px] text-[var(--color-ink-muted)]">
+      <div>
+        <span className={META}>found event</span>{" "}
+        <span className="font-mono text-[var(--color-accent)]">{result.eventId}</span>
+      </div>
+      <div>
+        <span className={META}>payment intent</span>{" "}
+        <span className="font-mono">{result.paymentIntentId ?? "—"}</span>
+      </div>
+      {result.amountUsd !== null && (
+        <div>
+          <span className={META}>amount</span>{" "}
+          <span className="font-mono">
+            ${result.amountUsd.toFixed(2)} {result.currency?.toUpperCase()}
+          </span>
+        </div>
+      )}
+      <div>
+        <span className={META}>arrived at</span>{" "}
+        <span className="font-mono text-[var(--color-ink-faint)]">
+          {result.arrivedAt.slice(11, 19)}Z
+        </span>
+      </div>
+      <div>
+        <span className={META}>consumed at</span>{" "}
+        <span className="font-mono text-[var(--color-ink-faint)]">
+          {result.consumedAt.slice(11, 19)}Z
+        </span>
+      </div>
+      <div>
+        <span className={META}>action</span>{" "}
+        <span className="font-mono text-[var(--color-accent)]">{result.action}</span>
+      </div>
+      <p className="text-[12px] italic leading-relaxed text-[var(--color-ink-muted)]">
+        {result.explainer}
+      </p>
     </div>
   );
 }
