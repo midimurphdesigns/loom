@@ -3,21 +3,31 @@
  *
  * Builds a Stripe-shaped payment_intent.succeeded event server-side,
  * signs it with STRIPE_WEBHOOK_SECRET, POSTs it to our own
- * /api/webhooks/stripe receiver. Lets visitors exercise the drift-
- * tolerant persistence path with one click instead of needing Stripe
- * CLI access.
+ * /api/webhooks/stripe receiver. The webhook handler writes to the
+ * global event store (real Stripe doesn't know about visitor cookies)
+ * AND we additionally write to a per-visitor list so this visitor's
+ * "list events" view only shows their own clicks.
  *
  * The signing happens server-side so the secret never leaves Node.
  */
 
 import { randomUUID } from "node:crypto";
 import crypto from "node:crypto";
+import { Redis } from "@upstash/redis";
+import {
+  getOrCreateVisitor,
+  visitorEventListKey,
+} from "@/lib/visitor";
 
 export const runtime = "nodejs";
 
 const WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET ?? "";
 
-/** Stripe signature scheme:  t=<unix>,v1=<HMAC-SHA256 of "<unix>.<rawBody>"> */
+const HAS_UPSTASH = Boolean(
+  process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
+);
+const redis = HAS_UPSTASH ? Redis.fromEnv() : null;
+
 function signPayload(rawBody: string, secret: string): string {
   const timestamp = Math.floor(Date.now() / 1000);
   const signedPayload = `${timestamp}.${rawBody}`;
@@ -36,6 +46,8 @@ export async function POST(req: Request): Promise<Response> {
     );
   }
 
+  const { visitorId, setCookieHeader } = getOrCreateVisitor(req);
+
   const eventId = `evt_test_${randomUUID().slice(0, 12)}`;
   const event = {
     id: eventId,
@@ -53,7 +65,7 @@ export async function POST(req: Request): Promise<Response> {
         amount: 47800,
         currency: "usd",
         status: "succeeded",
-        metadata: { source: "loom-demo-test-webhook" },
+        metadata: { source: "loom-demo-test-webhook", visitorId },
       },
     },
   };
@@ -70,13 +82,29 @@ export async function POST(req: Request): Promise<Response> {
     },
     body: rawBody,
   });
-
   const receiverBody = await receiver.text();
-  return Response.json({
+
+  // Also write to the per-visitor list so this visitor's "list events"
+  // call only sees their own events. Caps at 100 entries per visitor.
+  if (redis && receiver.ok) {
+    await redis.lpush(visitorEventListKey(visitorId, event.type), event.id);
+    await redis.ltrim(visitorEventListKey(visitorId, event.type), 0, 99);
+    await redis.expire(
+      visitorEventListKey(visitorId, event.type),
+      60 * 60 * 24 * 7,
+    );
+  }
+
+  const res = Response.json({
     sent: true,
     eventId,
     eventType: event.type,
     receiverStatus: receiver.status,
     receiverBody,
+    visitorId,
   });
+  if (setCookieHeader) {
+    res.headers.set("Set-Cookie", setCookieHeader);
+  }
+  return res;
 }

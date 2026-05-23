@@ -82,7 +82,13 @@ type WebhookSendResult = {
 
 type StripeEventListing = {
   type: string;
-  events: Array<{ id: string; type: string; created: number }>;
+  visitorId?: string;
+  events: Array<{
+    id: string;
+    type: string;
+    created: number;
+    consumed?: boolean;
+  }>;
 };
 
 type ConsumerResult =
@@ -173,8 +179,20 @@ export default function Home() {
     }
   };
 
+  const refreshWebhookEvents = async () => {
+    try {
+      const res = await fetch(
+        "/api/debug/stripe-events?type=payment_intent.succeeded",
+      );
+      if (res.ok) setWebhookEvents(await res.json());
+    } catch {
+      /* swallow */
+    }
+  };
+
   useEffect(() => {
     void refreshCost();
+    void refreshWebhookEvents();
   }, []);
 
   const fireCartAbandonment = async () => {
@@ -249,10 +267,7 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? `${res.status}`);
       setWebhookSendResult(data);
-      const listRes = await fetch(
-        "/api/debug/stripe-events?type=payment_intent.succeeded",
-      );
-      if (listRes.ok) setWebhookEvents(await listRes.json());
+      await refreshWebhookEvents();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -273,6 +288,7 @@ export default function Home() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.reason ?? `${res.status}`);
       setConsumerResult(data);
+      await refreshWebhookEvents();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -766,21 +782,54 @@ function WebhookSendPanel({ result }: { result: WebhookSendResult }) {
 function WebhookEventsPanel({ listing }: { listing: StripeEventListing }) {
   const META =
     "font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]";
+  const consumedCount = listing.events.filter((e) => e.consumed).length;
   return (
     <div className="mt-2 flex flex-col gap-1">
-      <div className={META}>persisted events ({listing.events.length})</div>
+      <div className={META}>
+        persisted events ({listing.events.length})
+        {consumedCount > 0 ? ` · ${consumedCount} consumed by you` : ""}
+      </div>
       {listing.events.length === 0 ? (
         <p className="text-[12px] text-[var(--color-ink-faint)]">
           (none — fire a test webhook above)
         </p>
       ) : (
-        <ul className="flex flex-col gap-1 font-mono text-[11px] text-[var(--color-ink-muted)]">
+        <ul className="flex flex-col gap-1 font-mono text-[11px]">
           {listing.events.map((ev) => (
-            <li key={ev.id} className="truncate">
+            <li
+              key={ev.id}
+              className={`truncate transition-opacity ${
+                ev.consumed
+                  ? "opacity-50 line-through decoration-[var(--color-accent)]/40"
+                  : ""
+              }`}
+              title={
+                ev.consumed
+                  ? "Your consumer recorded a cursor on this event. The event STAYS in the store — webhook stores are durable logs, not queues."
+                  : "Not yet consumed by your consumer."
+              }
+            >
+              <span
+                className={
+                  ev.consumed
+                    ? "text-[var(--color-accent)]"
+                    : "text-[var(--color-ink-faint)]"
+                }
+              >
+                {ev.consumed ? "✓" : "○"}
+              </span>{" "}
               <span className="text-[var(--color-ink-faint)]">
                 {new Date(ev.created * 1000).toISOString().slice(11, 19)}Z
               </span>{" "}
-              <span className="text-[var(--color-ink)]">{ev.type}</span>{" "}
+              <span
+                className={
+                  ev.consumed
+                    ? "text-[var(--color-ink-muted)]"
+                    : "text-[var(--color-ink)]"
+                }
+              >
+                {ev.type}
+              </span>{" "}
               <span className="text-[var(--color-ink-faint)]">{ev.id}</span>
             </li>
           ))}
