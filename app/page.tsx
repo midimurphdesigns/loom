@@ -45,6 +45,46 @@ type CostSummary = {
   overCap: boolean;
 };
 
+type BookingRecord = {
+  bookingId: string;
+  carrier: "carrier-a" | "carrier-b";
+  trackingNumber: string;
+};
+
+type ShippingResult =
+  | {
+      workflowId: string;
+      orderId: string;
+      outcome: "completed";
+      carrierABooking: BookingRecord;
+      carrierBBooking: BookingRecord;
+      stepsExecuted: string[];
+    }
+  | {
+      workflowId: string;
+      orderId: string;
+      outcome: "rolled_back";
+      carrierABooking: BookingRecord;
+      carrierACancellation: { bookingId: string; cancelledAt: string };
+      failedCarrier: string;
+      failureReason: string;
+      stepsExecuted: string[];
+      compensationsExecuted: string[];
+    };
+
+type WebhookSendResult = {
+  sent: boolean;
+  eventId: string;
+  eventType: string;
+  receiverStatus: number;
+  receiverBody: string;
+};
+
+type StripeEventListing = {
+  type: string;
+  events: Array<{ id: string; type: string; created: number }>;
+};
+
 const CONCEPTS = [
   "Vercel Workflows",
   "durable execution",
@@ -90,6 +130,20 @@ export default function Home() {
   const [attackChoice, setAttackChoice] = useState(0);
   const [cost, setCost] = useState<CostSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dedupSecond, setDedupSecond] = useState<CartAbandonmentResult | null>(
+    null,
+  );
+  const [shippingResult, setShippingResult] = useState<ShippingResult | null>(
+    null,
+  );
+  const [shippingLoading, setShippingLoading] = useState(false);
+  const [failCarrierB, setFailCarrierB] = useState(false);
+  const [webhookSendResult, setWebhookSendResult] =
+    useState<WebhookSendResult | null>(null);
+  const [webhookEvents, setWebhookEvents] = useState<StripeEventListing | null>(
+    null,
+  );
+  const [webhookLoading, setWebhookLoading] = useState(false);
 
   const refreshCost = async () => {
     try {
@@ -122,6 +176,68 @@ export default function Home() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCartLoading(false);
+    }
+  };
+
+  const fireDedupSecondAttempt = async () => {
+    if (!cartResult) return;
+    setError(null);
+    setDedupSecond(null);
+    setCartLoading(true);
+    try {
+      const res = await fetch("/api/workflows/cart-abandonment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cartId: cartResult.cartId }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.reason ?? `${res.status}`);
+      setDedupSecond(data);
+      await refreshCost();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setCartLoading(false);
+    }
+  };
+
+  const fireShippingMonitor = async () => {
+    setError(null);
+    setShippingResult(null);
+    setShippingLoading(true);
+    try {
+      const res = await fetch("/api/workflows/shipping", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ failCarrierB }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.reason ?? `${res.status}`);
+      setShippingResult(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setShippingLoading(false);
+    }
+  };
+
+  const sendTestWebhook = async () => {
+    setError(null);
+    setWebhookSendResult(null);
+    setWebhookLoading(true);
+    try {
+      const res = await fetch("/api/debug/send-test-webhook", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? `${res.status}`);
+      setWebhookSendResult(data);
+      const listRes = await fetch(
+        "/api/debug/stripe-events?type=payment_intent.succeeded",
+      );
+      if (listRes.ok) setWebhookEvents(await listRes.json());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWebhookLoading(false);
     }
   };
 
@@ -270,6 +386,28 @@ export default function Home() {
             {cartLoading ? "running..." : "fire abandonment workflow"}
           </button>
           {cartResult && <CartResult result={cartResult} />}
+          {cartResult && (
+            <div className="mt-2 flex flex-col gap-2">
+              <button
+                type="button"
+                onClick={fireDedupSecondAttempt}
+                disabled={cartLoading}
+                className="self-start rounded border border-[var(--color-divider)] bg-transparent px-4 py-2 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--color-ink)] transition-colors hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] disabled:opacity-40"
+              >
+                fire again with same cart id
+              </button>
+              <p className="text-[12px] leading-relaxed text-[var(--color-ink-faint)]">
+                Demonstrates receiver-side idempotency. The cart was marked
+                expired on the first run, so the second invocation
+                short-circuits with{" "}
+                <code className="text-[var(--color-ink)]">outcome: skipped</code>
+                . A real retry mid-flight (worker death) would land on the
+                send_email step instead, where the email provider&rsquo;s dedup
+                key catches the duplicate.
+              </p>
+              {dedupSecond && <CartResult result={dedupSecond} />}
+            </div>
+          )}
         </article>
 
         <article className="flex flex-col gap-4 rounded border border-[var(--color-divider)] bg-[var(--color-canvas-elev-1)] p-5">
@@ -309,6 +447,72 @@ export default function Home() {
             {checkoutLoading ? "negotiating..." : "fire checkout workflow"}
           </button>
           {checkoutResult && <CheckoutResult result={checkoutResult} />}
+        </article>
+      </section>
+
+      <section className="grid grid-cols-1 gap-5 md:grid-cols-2">
+        <article className="flex flex-col gap-4 rounded border border-[var(--color-divider)] bg-[var(--color-canvas-elev-1)] p-5">
+          <header className="flex flex-col gap-1">
+            <h2 className="font-mono text-sm font-bold text-[var(--color-ink)]">
+              shipping monitor · saga compensation
+            </h2>
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]">
+              book carrier a + b · roll back on b failure
+            </p>
+          </header>
+          <p className="text-[13px] leading-relaxed text-[var(--color-ink-muted)]">
+            Books carrier A, then carrier B. If carrier B fails, the saga rolls
+            back carrier A via a compensation step. The cancel uses a different
+            idempotency key from the original booking so the receiver
+            doesn&rsquo;t return the cached booking by mistake.
+          </p>
+          <label className="flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--color-ink-muted)]">
+            <input
+              type="checkbox"
+              checked={failCarrierB}
+              onChange={(e) => setFailCarrierB(e.target.checked)}
+              className="accent-[var(--color-accent)]"
+            />
+            simulate carrier b failure
+          </label>
+          <button
+            type="button"
+            onClick={fireShippingMonitor}
+            disabled={shippingLoading}
+            className="self-start rounded border border-[var(--color-accent)] bg-[var(--color-accent)] px-5 py-2.5 text-sm font-medium text-[var(--color-canvas)] transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            {shippingLoading ? "running..." : "fire shipping workflow"}
+          </button>
+          {shippingResult && <ShippingResultPanel result={shippingResult} />}
+        </article>
+
+        <article className="flex flex-col gap-4 rounded border border-[var(--color-divider)] bg-[var(--color-canvas-elev-1)] p-5">
+          <header className="flex flex-col gap-1">
+            <h2 className="font-mono text-sm font-bold text-[var(--color-ink)]">
+              stripe webhook · drift reconciliation
+            </h2>
+            <p className="font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]">
+              signed payload · upstash persistence · per-type list
+            </p>
+          </header>
+          <p className="text-[13px] leading-relaxed text-[var(--color-ink-muted)]">
+            Sends a Stripe-shaped <code>payment_intent.succeeded</code> event to
+            our own webhook receiver, signed server-side with
+            STRIPE_WEBHOOK_SECRET. The receiver verifies the signature,
+            persists the event to Upstash with a 30-day TTL, and pushes the id
+            onto a per-type list. The right column shows the most recent
+            persisted events.
+          </p>
+          <button
+            type="button"
+            onClick={sendTestWebhook}
+            disabled={webhookLoading}
+            className="self-start rounded border border-[var(--color-accent)] bg-[var(--color-accent)] px-5 py-2.5 text-sm font-medium text-[var(--color-canvas)] transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            {webhookLoading ? "sending..." : "send test webhook"}
+          </button>
+          {webhookSendResult && <WebhookSendPanel result={webhookSendResult} />}
+          {webhookEvents && <WebhookEventsPanel listing={webhookEvents} />}
         </article>
       </section>
 
@@ -399,6 +603,118 @@ function CartResult({ result }: { result: CartAbandonmentResult }) {
             {result.email.bodyPreview}
           </pre>
         </>
+      )}
+    </div>
+  );
+}
+
+function ShippingResultPanel({ result }: { result: ShippingResult }) {
+  const META =
+    "font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]";
+  const color =
+    result.outcome === "completed"
+      ? "text-[var(--color-accent)]"
+      : "text-orange-300";
+  return (
+    <div className="flex flex-col gap-2 text-[13px] text-[var(--color-ink-muted)]">
+      <div>
+        <span className={META}>outcome</span>{" "}
+        <span className={color}>{result.outcome}</span>
+      </div>
+      <div>
+        <span className={META}>order id</span>{" "}
+        <span className="font-mono">{result.orderId}</span>
+      </div>
+      <div>
+        <span className={META}>carrier a booking</span>{" "}
+        <span className="font-mono">{result.carrierABooking.bookingId}</span>
+      </div>
+      {result.outcome === "completed" && (
+        <div>
+          <span className={META}>carrier b booking</span>{" "}
+          <span className="font-mono">{result.carrierBBooking.bookingId}</span>
+        </div>
+      )}
+      {result.outcome === "rolled_back" && (
+        <>
+          <div>
+            <span className={META}>carrier a cancellation</span>{" "}
+            <span className="font-mono text-orange-300">
+              {result.carrierACancellation.cancelledAt.slice(11, 19)}Z
+            </span>
+          </div>
+          <div>
+            <span className={META}>failure reason</span>{" "}
+            <span className="text-red-300">{result.failureReason}</span>
+          </div>
+          <div>
+            <span className={META}>steps executed</span>{" "}
+            <span className="font-mono">{result.stepsExecuted.join(" · ")}</span>
+          </div>
+          <div>
+            <span className={META}>compensations</span>{" "}
+            <span className="font-mono text-orange-300">
+              {result.compensationsExecuted.join(" · ")}
+            </span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function WebhookSendPanel({ result }: { result: WebhookSendResult }) {
+  const META =
+    "font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]";
+  return (
+    <div className="flex flex-col gap-1 text-[13px] text-[var(--color-ink-muted)]">
+      <div>
+        <span className={META}>event id</span>{" "}
+        <span className="font-mono text-[var(--color-accent)]">
+          {result.eventId}
+        </span>
+      </div>
+      <div>
+        <span className={META}>type</span> {result.eventType}
+      </div>
+      <div>
+        <span className={META}>receiver status</span>{" "}
+        <span
+          className={
+            result.receiverStatus === 200
+              ? "text-[var(--color-accent)]"
+              : "text-red-300"
+          }
+        >
+          {result.receiverStatus}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function WebhookEventsPanel({ listing }: { listing: StripeEventListing }) {
+  const META =
+    "font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--color-ink-faint)]";
+  return (
+    <div className="mt-2 flex flex-col gap-1">
+      <div className={META}>persisted events ({listing.events.length})</div>
+      {listing.events.length === 0 ? (
+        <p className="text-[12px] text-[var(--color-ink-faint)]">
+          (none — fire a test webhook above)
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-1 font-mono text-[11px] text-[var(--color-ink-muted)]">
+          {listing.events.map((ev) => (
+            <li key={ev.id} className="truncate">
+              <span className="text-[var(--color-ink-faint)]">
+                {new Date(ev.created * 1000).toISOString().slice(11, 19)}Z
+              </span>{" "}
+              <span className="text-[var(--color-ink)]">{ev.type}</span>{" "}
+              <span className="text-[var(--color-ink-faint)]">{ev.id}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );
