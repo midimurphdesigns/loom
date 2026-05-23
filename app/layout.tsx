@@ -1,21 +1,19 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { geistMono, instrumentSerif, spaceGrotesk } from "@/lib/fonts";
+import Cursor from "@/components/Cursor";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "loom — durable AI-commerce backend",
   description:
     "Cart abandonment, dynamic checkout with margin-bounded discount negotiation, shipping monitor, return triage. Vercel Workflows + Stripe + Anthropic with cost-aware model routing. Companion build to forge.",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  themeColor: "#0A0A0B",
+  colorScheme: "dark",
 };
 
 export default function RootLayout({
@@ -24,17 +22,24 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    /* suppressHydrationWarning silences false-positive React warnings
-     * for attributes browser extensions write onto <html> before React
-     * hydrates (Google Analytics Opt-Out, dark-reader, etc.). It only
-     * suppresses direct attribute mismatches on <html>/<body> — real
-     * hydration mismatches deeper in the tree still surface. */
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${spaceGrotesk.variable} ${geistMono.variable} ${instrumentSerif.variable}`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <head>
+        <link
+          rel="preload"
+          href="/fonts/migra/Migra-Italic-Regular.woff2"
+          as="font"
+          type="font/woff2"
+          crossOrigin="anonymous"
+        />
+      </head>
+      <body className="min-h-screen w-full overflow-x-hidden">
+        <Cursor />
+        {children}
+      </body>
     </html>
   );
 }

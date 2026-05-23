@@ -1,36 +1,94 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# loom
 
-## Getting Started
+Durable AI-commerce backend for the fictional Greywater Outfitters. Companion build to [forge](https://github.com/midimurphdesigns/forge).
 
-First, run the development server:
+Demonstrates: Vercel Workflows + Stripe webhook drift reconciliation + agentic spending authority + adversarial-prompt guardrail + failure-injection durability proof + cost-aware Anthropic model routing.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
+## Architecture
+
+Read [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) first. Six flows are designed; two are shipped (cart abandonment + dynamic checkout). The architectural concepts are fully demonstrated by the two; the remaining four are surface-area completion.
+
+- **`lib/orchestration.ts`** — `OrchestrationProvider` interface. Workflow code is provider-agnostic so Vercel Workflows beta breakage triggers a one-file swap.
+- **`lib/orchestration-durable.ts`** — `DurableStubProvider` persists step results to Upstash, the way Vercel Workflows persists internally. Used by the failure-injection harness.
+- **`lib/workflows/cart-abandonment.ts`** — durable 6h sleep, LLM-composed re-engagement, idempotency-keyed mock email send.
+- **`lib/workflows/dynamic-checkout.ts`** — Opus-negotiated discount with hard ceiling enforcement in deterministic code AFTER the LLM returns.
+- **`lib/agent-authority.ts`** — the budget gate. `MAX_DISCOUNT_USD` and `MAX_REFUND_USD` ceilings from env, not from prompt.
+- **`lib/cost.ts`** — daily USD cap + per-model pricing. Workflows fail fast at the cap with `BudgetExceededError`.
+- **`app/api/webhooks/stripe/route.ts`** — drift-tolerant webhook receiver. Persists events to Upstash with 30d TTL + per-type list for workflow polling.
+
+## Local development
+
+```sh
+pnpm install
+cp .env.example .env.local
+# Fill in ANTHROPIC_API_KEY and Upstash creds at minimum
 pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Then open `http://localhost:3000` and click the workflow buttons.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+For shrunken sleep duration during local end-to-end testing of cart-abandonment, set `LOOM_DEMO_SLEEP_MS=500` in `.env.local` so the 6h durable sleep compresses to 500ms.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Adversarial guardrail proof — `pnpm sirens`
 
-## Learn More
+10 prompt-injection attacks designed to make the discount agent grant more than the $25 ceiling. Pass = budget gate held.
 
-To learn more about Next.js, take a look at the following resources:
+```sh
+pnpm sirens --dry-run                          # list scenarios, no LLM
+ANTHROPIC_API_KEY=... pnpm sirens              # full suite (~$0.50)
+ANTHROPIC_API_KEY=... pnpm sirens --scenario=ignore-instructions
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Snapshots write to `.loom/sirens/<timestamp>.json`. A passing snapshot is the security posture for the agentic-discount surface.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Durability proof — `pnpm failures`
 
-## Deploy on Vercel
+Simulates worker death at random step boundaries and asserts (a) workflow recovers via persisted step results in Upstash, (b) zero duplicate side effects (receiver-side idempotency keys hold), (c) zero dropped side effects.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```sh
+pnpm failures --dry-run                                  # list workflows + kill points
+ANTHROPIC_API_KEY=... pnpm failures --runs=5             # full suite (~$2.50)
+ANTHROPIC_API_KEY=... pnpm failures --workflow=cart-abandonment
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Requires Upstash env vars (durable storage is the point). Snapshots write to `.loom/failures/<timestamp>.json`. A passing snapshot proves the durability claim across N trials at each kill point with exactly-once visible side effects.
+
+## Production deploy (Vercel)
+
+### Founder action steps
+
+1. Create the Vercel project and attach `loom.kevinmurphywebdev.com`.
+2. Create an Upstash Redis database (Global, eviction enabled).
+3. Create a Stripe account (test mode is fine), get a webhook secret via `stripe listen --forward-to https://loom.kevinmurphywebdev.com/api/webhooks/stripe`.
+4. Set Vercel env vars (Production scope):
+   - `ANTHROPIC_API_KEY` — required
+   - `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN` — required
+   - `STRIPE_SECRET_KEY` + `STRIPE_WEBHOOK_SECRET` — required for the webhook receiver
+   - `LOOM_DAILY_USD_CAP` — defaults to 2 if unset
+   - `LOOM_MAX_DISCOUNT_USD` — defaults to 25
+   - `LOOM_MAX_REFUND_USD` — defaults to 50
+5. DNS: CNAME `loom` → `cname.vercel-dns.com`.
+6. Deploy.
+
+### Guardrails
+
+- **Daily USD cap** ($2 default). Workflows halt with `BudgetExceededError` when reached.
+- **Agent spending authority**: `MAX_DISCOUNT_USD` and `MAX_REFUND_USD` are env-driven hard ceilings the LLM cannot raise via prompt content. Validated in deterministic code after the LLM returns.
+
+## What loom intentionally does NOT do
+
+- **Real customer payments.** Stripe test-mode only.
+- **Real shipping or email integration.** Both are mocked; swapping in a real provider is one file behind the existing `EmailProvider` shape.
+- **Shipping monitor + return triage workflows.** Designed in `docs/ARCHITECTURE.md`; deferred from Phase 5. The architectural concepts are demonstrated by the two shipped workflows.
+- **A dispatcher between Stripe webhooks and workflow starts.** Webhook handler persists events to Upstash; the dispatcher pattern (transactional outbox + watchdog) is documented in the architecture but not built. Honest gap; would be Phase 7.
+
+## Reading order
+
+If you're new to this codebase:
+1. `docs/ARCHITECTURE.md` — the design contract
+2. `lib/orchestration.ts` — the provider abstraction
+3. `lib/workflows/cart-abandonment.ts` — the simpler workflow
+4. `lib/workflows/dynamic-checkout.ts` — the agentic workflow
+5. `lib/agent-authority.ts` — the budget gate
+6. `scripts/sirens.ts` — the adversarial suite
+7. `scripts/failure-injection.ts` — the durability proof
