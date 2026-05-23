@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "sirens": "tsx --tsconfig tsconfig.json scripts/sirens.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.79",

@@ -17,8 +17,10 @@
  */
 
 import { anthropic } from "@ai-sdk/anthropic";
-import { generateText } from "ai";
+import { generateObject, generateText } from "ai";
+import { z } from "zod";
 import { assertWithinBudget, recordSpend, type LlmUsageSample } from "@/lib/cost";
+import type { AgentDecision } from "@/lib/agent-authority";
 
 export const HAIKU_MODEL = "claude-haiku-4-5";
 export const OPUS_MODEL = "claude-opus-4-7";
@@ -95,4 +97,45 @@ export async function generateTextOpus(opts: GenerateOptions): Promise<string> {
     `[anthropic] opus step=${opts.stepName} in=${sample.inputTokens} out=${sample.outputTokens} usd=${cost.totalUsd.toFixed(5)}`,
   );
   return result.text;
+}
+
+const AgentDecisionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("discount"),
+    amountUsd: z.number().nonnegative(),
+    reasoning: z.string(),
+  }),
+  z.object({
+    kind: z.literal("refund"),
+    amountUsd: z.number().nonnegative(),
+    reasoning: z.string(),
+  }),
+  z.object({
+    kind: z.literal("no_action"),
+    reasoning: z.string(),
+  }),
+]);
+
+/**
+ * Generate a typed AgentDecision via Opus + structured output.
+ * The shape is enforced by Zod so the budget gate downstream knows
+ * exactly which fields it's validating. The gate (in agent-authority.ts)
+ * still has the final word — this helper just shapes the model output.
+ */
+export async function generateAgentDecisionOpus(
+  opts: GenerateOptions,
+): Promise<AgentDecision> {
+  await assertWithinBudget();
+  const result = await generateObject({
+    model: anthropic(OPUS_MODEL),
+    schema: AgentDecisionSchema,
+    system: opts.system,
+    prompt: opts.prompt,
+  });
+  const sample = extractUsage(result, opts.workflowId, opts.stepName, OPUS_MODEL);
+  const cost = await recordSpend(sample);
+  console.log(
+    `[anthropic] opus(decision) step=${opts.stepName} kind=${result.object.kind} in=${sample.inputTokens} out=${sample.outputTokens} usd=${cost.totalUsd.toFixed(5)}`,
+  );
+  return result.object as AgentDecision;
 }
