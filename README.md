@@ -8,7 +8,7 @@ Demonstrates: Vercel Workflows + Stripe webhook drift reconciliation + agentic s
 
 Read [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) first. Six flows are designed; two are shipped (cart abandonment + dynamic checkout). The architectural concepts are fully demonstrated by the two; the remaining four are surface-area completion.
 
-- **`lib/orchestration.ts`** — `OrchestrationProvider` interface. Workflow code is provider-agnostic so Vercel Workflows beta breakage triggers a one-file swap.
+- **`lib/orchestration.ts`** — Internal provider interface used only by the failure-injection harness (stub providers simulate crash-and-replay without involving the Workflows runtime). Vercel Workflows (GA) is the production runtime.
 - **`lib/orchestration-durable.ts`** — `DurableStubProvider` persists step results to Upstash, the way Vercel Workflows persists internally. Used by the failure-injection harness.
 - **`lib/workflows/cart-abandonment.ts`** — durable 6h sleep, LLM-composed re-engagement, idempotency-keyed mock email send.
 - **`lib/workflows/dynamic-checkout.ts`** — Opus-negotiated discount with hard ceiling enforcement in deterministic code AFTER the LLM returns.

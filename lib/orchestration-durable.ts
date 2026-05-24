@@ -17,8 +17,11 @@
  *      reading lib/orchestration-durable.ts can see exactly which
  *      keys get written, when, and how resume reads them.
  *
- * In production, swap DurableStubProvider for WorkflowsProvider in
- * one line. The workflow code is unchanged.
+ * Production uses the Workflows runtime directly via WorkflowsProvider.
+ * DurableStubProvider exists for the failure-injection harness only —
+ * it lets the harness inspect persisted step state at arbitrary points
+ * so it can simulate crash-between-execute-and-record without bringing
+ * up a real Workflows runtime.
  */
 
 import { Redis } from "@upstash/redis";

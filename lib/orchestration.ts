@@ -1,21 +1,19 @@
 /**
- * OrchestrationProvider — thin interface over Vercel Workflows so the
- * workflow logic stays provider-agnostic. Default implementation uses
- * Vercel's `workflow` npm package, whose model is: any exported async
- * function becomes durable; calls to `sleep` and `fetch` (imported
- * from `workflow`) survive worker death and resume on restart.
+ * OrchestrationProvider — internal interface used by the
+ * failure-injection harness so it can simulate crash-and-replay
+ * without involving the Vercel Workflows runtime. Production uses
+ * the Workflows runtime directly via the `workflow` npm package
+ * (GA); calls to `sleep` survive worker death and resume on restart.
  *
- * If Workflows breaks or gets pulled, swap the default impl for
- * InngestProvider or TemporalProvider in this one file; the workflow
- * functions themselves keep working against the same interface.
- *
- * Two abstractions baked in:
- *   1) sleep(durationMs) — durable sleep. Workflows handles via the
- *      package's own sleep primitive. Stub falls back to setTimeout
- *      (does NOT survive worker death — for unit tests only).
- *   2) step(name, fn) — checkpoints a step's result. Workflows
- *      provides durability via its internal step tracking; we wrap
- *      with a stable name so logs + idempotency keys are derivable.
+ * Two abstractions on the interface:
+ *   1) sleep(durationMs) — durable sleep. The WorkflowsProvider
+ *      delegates to the package's `sleep` primitive. StubProvider
+ *      falls back to setTimeout (does NOT survive worker death —
+ *      for tests only).
+ *   2) step(name, fn) — checkpoints a step's result. The
+ *      WorkflowsProvider relies on the runtime's built-in step
+ *      tracking; stub providers persist results in-memory or to
+ *      Upstash so the harness can inspect and replay them.
  */
 
 import { sleep as workflowSleep } from "workflow";

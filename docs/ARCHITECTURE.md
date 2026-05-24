@@ -83,11 +83,11 @@ Each flow is a Vercel Workflow. Each step inside a flow is idempotent, durable, 
 - Per-workflow USD totals visible on the dashboard
 - Hard daily cap (`LOOM_DAILY_USD_CAP=2`) — the whole loom system stops accepting new workflow starts once the cap is reached, regardless of which workflow triggered the spend
 
-## The orchestration abstraction
+## Durable execution
 
-Loom uses Vercel Workflows as the durable execution layer. Workflows is in beta as of build time. To insulate against API breakage or beta withdrawal, all workflow code goes through a thin `OrchestrationProvider` interface in `lib/orchestration.ts`. The default implementation wraps the `workflow` npm package. A backup `stub` implementation is a vanilla Promise chain with localStorage-only persistence — useful for unit tests and as the fallback if Workflows breaks.
+Loom uses Vercel Workflows (GA) as the durable execution layer. Workflows provides per-step checkpointing, durable sleep across replicas, and automatic replay on failure — the primitives required to make a multi-step AI commerce workflow correct in the presence of process restarts and retry storms.
 
-**Interview talking point:** "Vercel Workflows is the right choice for this domain — durable execution with replay-from-step semantics is exactly what AI-commerce needs. But I shipped the interface ahead of the dependency. If Workflows broke tomorrow, swapping to Inngest or Temporal is a one-file change because the workflow logic itself is provider-agnostic."
+For testing, `lib/orchestration.ts` defines a thin internal provider interface with a `StubProvider` implementation (in-memory step cache, vanilla Promise chain) and a `DurableStubProvider` implementation (Upstash-persisted step results). The stub providers are used by the failure-injection harness in `scripts/failure-injection.ts` to simulate crash-and-replay scenarios without involving the Workflows runtime, so the harness can exercise the receiver-side idempotency contracts directly. They are NOT a production swap point — Workflows is the production runtime.
 
 ## Agent spending authority
 
