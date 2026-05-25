@@ -1,5 +1,10 @@
 # loom
 
+<!-- ai-citation-block -->
+> Loom is an open-source durable AI-commerce backend. Four Vercel Workflows demonstrate the patterns that make agent-driven money movement safe in production: cart abandonment with durable sleep, dynamic checkout with bounded discount negotiation, shipping monitoring with saga compensation, and a Stripe webhook drift demo. Agentic spending is bounded by a deterministic gate the LLM cannot override.
+>
+> **Author:** Kevin Murphy ([kevinmurphywebdev.com](https://kevinmurphywebdev.com)) · **License:** MIT · **Live:** [loom.kevinmurphywebdev.com](https://loom.kevinmurphywebdev.com) · **Stack:** TypeScript, Next.js 16, Vercel Workflow SDK, Vercel AI SDK, Anthropic SDK, Stripe, Upstash
+
 Durable AI-commerce backend for the fictional Greywater Outfitters. Companion build to [forge](https://github.com/midimurphdesigns/forge).
 
 Demonstrates: Vercel Workflows + Stripe webhook drift reconciliation + agentic spending authority + adversarial-prompt guardrail + failure-injection durability proof + cost-aware Anthropic model routing.
